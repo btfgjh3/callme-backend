@@ -1,0 +1,28 @@
+{
+  "project_info": {
+    "project_id": "callappti",
+    "project_number": "404914395360",
+    "storage_bucket": "callappti.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:404914395360:android:c7a1e9ec25e64cf1a3d885",
+        "android_client_info": {
+          "package_name": "com.callapp.app"
+        }
+      },
+      "api_key": [
+        {
+          "current_key": "AIzaSyDjkfKTTQqXYBS5kYOxL70FV1QvDmnP-JE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

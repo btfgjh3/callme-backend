@@ -1,0 +1,6 @@
+{
+  "name": "CallMe",
+  "description": "تطبيق CallMe للمكالمات الصوتية والمرئية والدردشة الآمنة نظير إلى نظير (P2P WebRTC)",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
