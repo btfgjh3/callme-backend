@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import dotenv from "dotenv";
 import { sendFCMNotification, initializeFirebaseAdmin } from "./src/utils/firebaseAdmin.js";
 import {
   connectDB,
@@ -24,6 +25,34 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const adminRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function enforceAdminRateLimit(key: string, limit: number, windowMs: number, res: any) {
+  const now = Date.now();
+  const current = adminRateLimitMap.get(key);
+
+  if (!current || current.resetAt <= now) {
+    adminRateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (current.count >= limit) {
+    res.status(429).json({ error: "تم تجاوز عدد المحاولات المسموح بها. حاول مرة أخرى لاحقًا." });
+    return false;
+  }
+
+  current.count += 1;
+  return true;
+}
+
+for (const envPath of [
+  path.resolve(__dirname, ".env"),
+  path.resolve(__dirname, "..", ".env"),
+  path.resolve(process.cwd(), ".env")
+]) {
+  dotenv.config({ path: envPath });
+}
 
 interface UserInterface {
   email: string;
@@ -365,7 +394,7 @@ async function seedDatabase() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
 
   // Enable CORS for Android / Capacitor WebViews
   app.use((req, res, next) => {
@@ -1525,12 +1554,31 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
   // 1. Admin Login
   app.post("/api/admin/login", async (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) {
+    const normalizedUsername = typeof username === "string" ? username.trim().toLowerCase() : "";
+    const rateLimitKey = `login:${req.ip || "unknown"}`;
+
+    if (!enforceAdminRateLimit(rateLimitKey, 8, 15 * 60 * 1000, res)) {
+      return;
+    }
+
+    if (!normalizedUsername || !password) {
       return res.status(400).json({ error: "اسم المستخدم وكلمة المرور مطلوبان" });
     }
 
     try {
-      const admin = await Admin.findOne({ username: username.trim().toLowerCase() });
+      const admin = await Admin.findOne({ username: normalizedUsername });
+      const debugInfo = {
+        username: normalizedUsername,
+        found: !!admin,
+        role: admin?.role || null,
+        hasPasswordHash: !!admin?.passwordHash,
+        status: admin?.status || null,
+      };
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[AdminAuth Debug] Login attempt", debugInfo);
+      }
+
       if (!admin) {
         // Log failed attempt
         await AdminLoginLog.create({
@@ -1552,6 +1600,10 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
       }
 
       const isMatch = await bcrypt.compare(password, admin.passwordHash);
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[AdminAuth Debug] bcrypt comparison result", { username: normalizedUsername, isMatch });
+      }
+
       if (!isMatch) {
         // Log failed attempt
         await AdminLoginLog.create({
@@ -1570,6 +1622,13 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
           timestamp: Date.now()
         });
         return res.status(401).json({ error: "اسم المشرف أو كلمة المرور غير صحيحة" });
+      }
+
+      if (admin.role !== "admin" && admin.role !== "super_admin" && admin.role !== "moderator") {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[AdminAuth Debug] Rejected login because role is not an allowed admin role", { username: normalizedUsername, role: admin.role });
+        }
+        return res.status(403).json({ error: "حساب المستخدم غير مصرح له بالدخول إلى لوحة الإدارة" });
       }
 
       // Success
@@ -1620,7 +1679,7 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
     const token = authHeader.substring(7);
     try {
       const session = await AdminSession.findOne({ token });
-      if (!session || session.role !== "admin") {
+      if (!session || !["admin", "super_admin", "moderator"].includes(session.role)) {
         return res.status(403).json({ error: "403 Forbidden - Access denied" });
       }
       req.admin = session;
@@ -1953,7 +2012,76 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
     }
   });
 
-  // 15. Security & Logs - Admin History
+  // 15. Change Admin Password (authenticated)
+  app.post("/api/admin/password/change", async (req: any, res: any) => {
+    const { currentPassword, newPassword, confirmPassword, adminUsername } = req.body;
+    const rateLimitKey = `password:${req.ip || "unknown"}`;
+
+    if (!enforceAdminRateLimit(rateLimitKey, 10, 15 * 60 * 1000, res)) {
+      return;
+    }
+
+    if (!req.admin) {
+      return res.status(403).json({ error: "غير مصرح لك بإجراء هذا الإجراء" });
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: "جميع الحقول مطلوبة" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل" });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: "تأكيد كلمة المرور الجديدة غير متطابق" });
+    }
+
+    try {
+      const admin = await Admin.findOne({ username: req.admin.username.toLowerCase() });
+      if (!admin) {
+        return res.status(404).json({ error: "لم يتم العثور على المستخدم الإداري" });
+      }
+
+      const isCurrentValid = await bcrypt.compare(currentPassword, admin.passwordHash);
+      if (!isCurrentValid) {
+        await SecurityEvent.create({
+          id: `sec_${Date.now()}`,
+          type: "failed_login",
+          description: "محاولة تغيير كلمة المرور فشلت بسبب كلمة المرور الحالية غير الصحيحة",
+          severity: "high",
+          timestamp: Date.now()
+        });
+        return res.status(401).json({ error: "كلمة المرور الحالية غير صحيحة" });
+      }
+
+      const newHash = await bcrypt.hash(newPassword, 12);
+      await Admin.updateOne({ username: admin.username }, { $set: { passwordHash: newHash } });
+      await AdminSession.deleteMany({ username: admin.username });
+
+      await AuditLog.create({
+        id: `aud_${Date.now()}`,
+        adminUsername: adminUsername || admin.username,
+        action: "تغيير كلمة المرور",
+        details: "تم تغيير كلمة المرور الخاصة بالمدير بنجاح",
+        timestamp: Date.now()
+      });
+
+      await SecurityEvent.create({
+        id: `sec_${Date.now()}`,
+        type: "settings_changed",
+        description: "تم تغيير كلمة المرور الإدارية بنجاح",
+        severity: "high",
+        timestamp: Date.now()
+      });
+
+      return res.json({ success: true, message: "تم تغيير كلمة المرور بنجاح" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 16. Security & Logs - Admin History
   app.get("/api/admin/security/logs", async (req, res) => {
     try {
       const loginHistory = await AdminLoginLog.find().sort({ timestamp: -1 });

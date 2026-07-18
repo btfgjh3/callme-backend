@@ -7,8 +7,10 @@ export const isCapacitor = typeof window !== "undefined" && (
   window.location.hostname === "localhost" && !window.location.port
 );
 
+const runtimeApiUrl = (import.meta.env.VITE_API_URL || "https://ais-pre-4d2hzxztj6yiwl5lwiiebn-889443325100.europe-west2.run.app").replace(/\/$/, "");
+
 // The production backend base URL
-export const BACKEND_URL = "https://ais-pre-4d2hzxztj6yiwl5lwiiebn-889443325100.europe-west2.run.app";
+export const BACKEND_URL = runtimeApiUrl;
 
 // Centralized API Base URL
 export const API_BASE = isCapacitor 

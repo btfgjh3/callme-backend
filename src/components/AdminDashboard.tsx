@@ -51,6 +51,12 @@ export default function AdminDashboard({ admin, onLogout }: AdminDashboardProps)
     storageProvider: 'Local Memory Store',
     privacyLevel: 'Strict Peer-to-Peer'
   });
+  const [passwordChangeForm, setPasswordChangeForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+  const [passwordChangeBusy, setPasswordChangeBusy] = useState(false);
 
   // UI state managers
   const [userSearch, setUserSearch] = useState('');
@@ -323,6 +329,49 @@ export default function AdminDashboard({ admin, onLogout }: AdminDashboardProps)
       }
     } catch (e) {
       showToast('خطأ في الاتصال', 'error');
+    }
+  };
+
+  // Change Admin Password
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passwordChangeForm.currentPassword || !passwordChangeForm.newPassword || !passwordChangeForm.confirmPassword) {
+      showToast('يرجى ملء جميع حقول تغيير كلمة المرور', 'error');
+      return;
+    }
+    if (passwordChangeForm.newPassword.length < 6) {
+      showToast('كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل', 'error');
+      return;
+    }
+    if (passwordChangeForm.newPassword !== passwordChangeForm.confirmPassword) {
+      showToast('تأكيد كلمة المرور الجديدة غير متطابق', 'error');
+      return;
+    }
+
+    setPasswordChangeBusy(true);
+    try {
+      const res = await adminFetch('/api/admin/password/change', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentPassword: passwordChangeForm.currentPassword,
+          newPassword: passwordChangeForm.newPassword,
+          confirmPassword: passwordChangeForm.confirmPassword,
+          adminUsername: admin.username
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showToast('تم تغيير كلمة المرور بنجاح. الرجاء تسجيل الدخول مرة أخرى إذا لزم الأمر');
+        setPasswordChangeForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      } else {
+        showToast(data.error || 'فشل تغيير كلمة المرور', 'error');
+      }
+    } catch (e) {
+      showToast('خطأ في الاتصال بالخادم', 'error');
+    } finally {
+      setPasswordChangeBusy(false);
     }
   };
 
@@ -1661,6 +1710,63 @@ export default function AdminDashboard({ admin, onLogout }: AdminDashboardProps)
                         </button>
                       </div>
 
+                    </form>
+
+                    <form onSubmit={handleChangeAdminPassword} className={`p-6 rounded-2xl border space-y-4 max-w-2xl ${
+                      theme === 'dark' ? 'bg-[#121214] border-zinc-800' : 'bg-white border-zinc-200 shadow-sm'
+                    }`}>
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h3 className="text-sm font-extrabold">تغيير كلمة مرور المشرف</h3>
+                          <p className="text-[10px] text-zinc-500 font-bold">تغيير كلمة المرور الحالية بشكل آمن مع التحقق من الهوية</p>
+                        </div>
+                        <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500">
+                          <Key className="w-4 h-4" />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 block">الكلمة الحالية</label>
+                          <input
+                            type="password"
+                            value={passwordChangeForm.currentPassword}
+                            onChange={(e) => setPasswordChangeForm({ ...passwordChangeForm, currentPassword: e.target.value })}
+                            className={`w-full p-2.5 text-xs rounded-xl border outline-none font-bold ${theme === 'dark' ? 'bg-[#1C1C1F] border-zinc-800 text-white' : 'bg-zinc-50 border-zinc-200 text-zinc-900'}`}
+                            placeholder="أدخل الكلمة الحالية"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 block">الكلمة الجديدة</label>
+                          <input
+                            type="password"
+                            value={passwordChangeForm.newPassword}
+                            onChange={(e) => setPasswordChangeForm({ ...passwordChangeForm, newPassword: e.target.value })}
+                            className={`w-full p-2.5 text-xs rounded-xl border outline-none font-bold ${theme === 'dark' ? 'bg-[#1C1C1F] border-zinc-800 text-white' : 'bg-zinc-50 border-zinc-200 text-zinc-900'}`}
+                            placeholder="أدخل كلمة جديدة"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 block">تأكيد الكلمة</label>
+                          <input
+                            type="password"
+                            value={passwordChangeForm.confirmPassword}
+                            onChange={(e) => setPasswordChangeForm({ ...passwordChangeForm, confirmPassword: e.target.value })}
+                            className={`w-full p-2.5 text-xs rounded-xl border outline-none font-bold ${theme === 'dark' ? 'bg-[#1C1C1F] border-zinc-800 text-white' : 'bg-zinc-50 border-zinc-200 text-zinc-900'}`}
+                            placeholder="أعد كتابة الكلمة"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={passwordChangeBusy}
+                          className="px-5 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl transition-all transform active:scale-95 cursor-pointer shadow-lg shadow-amber-500/10 disabled:opacity-60"
+                        >
+                          {passwordChangeBusy ? 'جاري التحديث...' : 'تغيير كلمة المرور'}
+                        </button>
+                      </div>
                     </form>
                   </div>
                 )}

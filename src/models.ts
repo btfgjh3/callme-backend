@@ -1,20 +1,96 @@
+import dotenv from "dotenv";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
-const mongoURI = process.env.MONGODB_URI;
+dotenv.config();
 
-export async function connectDB() {
-  if (mongoose.connection.readyState >= 1) {
+const mongoURI = process.env.MONGODB_URI || process.env.DATABASE_URL;
+const MONGO_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+const FALLBACK_HOST = "ac-vmm8gqj-shard-00-00.s7vvmnm.mongodb.net";
+const MONGO_OPTIONS = {
+  dbName: "callme",
+  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
+  retryWrites: true,
+  family: 4 as 4,
+  w: "majority" as const,
+};
+
+function logMongoError(message: string, error?: unknown) {
+  const details = error instanceof Error ? error.message : String(error ?? "unknown error");
+  console.warn(`[MongoDB] ${message}: ${details}`);
+}
+
+function buildMongoUri() {
+  if (!mongoURI) {
+    return null;
+  }
+
+  if (mongoURI.startsWith("mongodb+srv://")) {
+    const fallbackUri = mongoURI
+      .replace("mongodb+srv://", "mongodb://")
+      .replace(/@([^/?#]+)/, `@${FALLBACK_HOST}`);
+
+    const separator = fallbackUri.includes("?") ? "&" : "?";
+    return `${fallbackUri}${separator}retryWrites=true&w=majority&tls=true&authSource=admin`;
+  }
+
+  return mongoURI;
+}
+
+function attachMongoEventHandlers() {
+  if (mongoose.connection.listenerCount("connected") > 0 && mongoose.connection.listenerCount("error") > 0) {
     return;
   }
+
+  mongoose.connection.on("connected", () => {
+    console.log("[MongoDB] Mongoose connected to Atlas.");
+  });
+
+  mongoose.connection.on("disconnected", () => {
+    console.warn("[MongoDB] Disconnected from Atlas. Mongoose will retry automatically.");
+  });
+
+  mongoose.connection.on("error", (error) => {
+    logMongoError("Connection error", error);
+  });
+}
+
+export async function connectDB() {
+  attachMongoEventHandlers();
+
+  if (mongoose.connection.readyState === 1) {
+    return;
+  }
+
   if (!mongoURI) {
     throw new Error("MONGODB_URI is not defined in the environment variables. Please check your .env file.");
   }
-  console.log("Connecting to MongoDB Atlas...");
-  await mongoose.connect(mongoURI, {
-    serverSelectionTimeoutMS: 5000,
-  });
-  console.log("MongoDB Atlas Connected successfully to db: callme");
+
+  const connectionUri = buildMongoUri();
+  if (!connectionUri) {
+    throw new Error("Unable to construct a MongoDB connection URI.");
+  }
+
+  for (let attempt = 1; attempt <= MONGO_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+    try {
+      console.log(`[MongoDB] Attempt ${attempt}/${MONGO_RETRY_DELAYS_MS.length + 1} to connect...`);
+      await mongoose.connect(connectionUri, MONGO_OPTIONS);
+      console.log("[MongoDB] Connected successfully to Atlas cluster.");
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt === MONGO_RETRY_DELAYS_MS.length + 1;
+      logMongoError(`Connection attempt ${attempt} failed`, error);
+      if (isLastAttempt) {
+        throw error;
+      }
+
+      const delay = MONGO_RETRY_DELAYS_MS[attempt - 1] || 8000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }
 
 // User Schema
